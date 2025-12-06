@@ -39,8 +39,8 @@ msg_salida_archivo   db "El codigo QR ha sido generado",0Ah,0
 .UDATA
 
 ; ==== Entradas de usuario ====
-texto_usuario        resb 33         ; Buffer para el texto del usuario (32 + null terminator)
-opcion_menu          resb 1          ; Opcion del menu
+texto_usuario        resb 33        ; Buffer para el texto del usuario (32 + null terminator)
+opcion_menu          resb 1         ; Opcion del menu
 
 ; ==== Variables internas ====
 file_buffer          resb 1024      ; Buffer para todo el archivo
@@ -69,7 +69,93 @@ menu:
    je iniciar_generador
    cmp al, '2'
    je salir_programa
-   jmp menu                ; Opcion invalida, volver al menu
+   jmp menu                    ;Opcion invalida, volver al menu
+
+
+
+
+; Convertir texto a binario (ASCII de 8 bits)
+; Entrada: texto_usuario contiene el texto
+; Salida: data_bits contiene los bits ('0' y '1' como caracteres)
+;         data_length contiene la cantidad de bits
+;         EAX = número de bits, o -1 si error
+texto_a_binario:
+    pusha
+    
+    ; Calcular longitud del texto
+    mov esi, texto_usuario
+    xor ecx, ecx             ; contador de caracteres
+    
+.count_loop:
+    lodsb                    ; cargar byte de [ESI] en AL
+    test al, al              ; verificar si es null terminator
+    jz .count_done
+    cmp al, 0x0A             ; verificar si es newline
+    je .count_done
+    cmp al, 0x0D             ; verificar si es carriage return
+    je .count_done
+    inc ecx
+    cmp ecx, 32              ; máximo 32 caracteres
+    jg .error_length
+    jmp .count_loop
+    
+.count_done:
+    ; ECX = número de caracteres
+    ; Calcular bits totales: caracteres * 8
+    push ecx
+    shl ecx, 3               ; multiplicar por 8 (ECX = ECX * 8)
+    mov [data_length], ecx
+    pop ecx
+    
+    ; Convertir cada carácter a 8 bits
+    mov esi, texto_usuario   ; puntero al texto
+    mov edi, data_bits       ; puntero al buffer de bits
+    
+.char_loop:
+    test ecx, ecx
+    jz .done
+    
+    lodsb                    ; cargar carácter en AL
+    cmp al, 0x0A             ; verificar newline
+    je .done
+    cmp al, 0x0D             ; verificar carriage return
+    je .done
+    
+    ; Convertir este byte a 8 bits
+    push ecx
+    mov ecx, 8               ; 8 bits por byte
+    
+.bit_loop:
+    shl al, 1                ; desplazar bit más significativo a CF
+    jc .bit_is_one
+    
+.bit_is_zero:
+    mov byte [edi], '0'
+    jmp .next_bit
+    
+.bit_is_one:
+    mov byte [edi], '1'
+    
+.next_bit:
+    inc edi
+    dec ecx
+    jnz .bit_loop
+    
+    pop ecx
+    dec ecx
+    jmp .char_loop
+    
+.done:
+    popa
+    mov eax, [data_length]   ; retornar número de bits
+    ret
+    
+.error_length:
+    jmp error
+
+
+
+
 
 
 iniciar_generador:
@@ -92,18 +178,20 @@ salir_programa:
    .EXIT
 
 procesar_qr:
-   ;Proceso para abrir nuestro archivo
-    mov eax, 5          ; sys_open
-    mov ebx, filename   ; Nombre del archivo
-    mov ecx, 2          ; Modo: Leer y escribir
-    int 0x80            ; Se llama a la interrupción
-    cmp eax, 0          ; El resultado fue guardado en EAX: si este dió 0, hubo un error
-    js  error           ; Si error, salir
-    mov [fd], eax       ; Guardar descriptor del archivo en fd
    ; ============================================
-   ; 2. LEER ARCHIVO COMPLETO
+   ; 2. ABRIRI ARCHIVO
    ; ============================================
-    mov eax, 3               ; sys_read
+    mov eax, 5              ; sys_open
+    mov ebx, filename       ; Nombre del archivo
+    mov ecx, 2              ; Modo: Leer y escribir
+    int 0x80                ; Se llama a la interrupción
+    cmp eax, 0              ; El resultado fue guardado en EAX: si este dió 0, hubo un error
+    js  error               ; Si error, salir
+    mov [fd], eax           ; Guardar descriptor del archivo en fd
+   ; ============================================
+   ; 2. LEER ARCHIVO
+   ; ============================================
+    mov eax, 3                  ; sys_read
     mov ebx, [fd]
     mov ecx, file_buffer
     mov edx, 1024
@@ -123,10 +211,10 @@ procesar_qr:
     ; ============================================
     ; 4. MODIFICAR LA MATRIZ
     ; ============================================
-    ; Ejemplo 1: Cambiar posición [10, 10] a '1'
-    mov eax, 13              ; fila
-    mov ebx, 15              ; columna
-    mov cl, '1'              ; nuevo valor
+    ; Ejemplo: Cambiar posición [13, 15] a 1
+    mov eax, 13                 ; fila
+    mov ebx, 15                 ; columna
+    mov cl, '1'                 ; nuevo valor
     call set_bit
 
    ; ============================================
@@ -138,21 +226,21 @@ procesar_qr:
     ; 6. SOBREESCRIBIR ARCHIVO
     ; ============================================
     ; Volver al inicio del archivo
-    mov eax, 19              ; sys_lseek
+    mov eax, 19                 ; sys_lseek
     mov ebx, [fd]
-    xor ecx, ecx             ; offset 0
-    xor edx, edx             ; SEEK_SET
+    xor ecx, ecx                ; offset 0
+    xor edx, edx                ; SEEK_SET
     int 0x80
     
     ; Escribir buffer modificado
-    mov eax, 4               ; sys_write
+    mov eax, 4                  ; sys_write
     mov ebx, [fd]
     mov ecx, file_buffer
     mov edx, [bytes_read]
     int 0x80
     
     ; Cerrar archivo
-    mov eax, 6               ; sys_close
+    mov eax, 6                  ; sys_close
     mov ebx, [fd]
     int 0x80
     
@@ -182,24 +270,27 @@ extract_matrix:
     
     ; Saltar dimensiones "25 25\n"
     .skip_dimensions:
-        lodsb
-        cmp al, 10               ; newline
+        lodsb                       ; move al, [esi]
+                                    ; inc esi
+        cmp al, 10                  ; newline
         jne .skip_dimensions
     
     ; Copiar matriz eliminando saltos de línea
-    xor ecx, ecx                 ; contador
+    xor ecx, ecx                    ; contador
     .copy_loop:
-        lodsb
-        cmp al, 10               ; si es newline, ignorar
+        lodsb                       ; move al, [esi]
+                                    ; inc esi
+
+        cmp al, 10                  ; si es newline, ignorar
         je .skip_newline
-        cmp al, 0                ; fin de buffer
+        cmp al, 0                   ; fin de buffer
         je .done
         
         mov [edi], al
         inc edi
         inc ecx
         
-        cmp ecx, 625             ; 25x25
+        cmp ecx, 625                ; 25x25
         jge .done
         jmp .copy_loop
         
@@ -252,6 +343,8 @@ rebuild_buffer:
     .done:
         popa
         ret
+
+
 
 
 
