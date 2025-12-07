@@ -9,6 +9,53 @@
 
 ;Salida: Imagen pbm
 
+;==== FUNCIONES PARA MANIPULACIÓN DE MATRIZ ====
+;
+; 1. extract_matrix
+;    - Extrae la matriz 25x25 del archivo PBM (ignora encabezado)
+;    - Entrada: file_buffer con el contenido del archivo
+;    - Salida: matrix con 625 bytes (solo 0s y 1s)
+;
+; 2. matrix_to_line
+;    - Convierte la matriz en una línea modificable
+;    - Entrada: matrix (625 bytes)
+;    - Salida: matrix_line (625 bytes) - copia modificable
+;
+; 3. line_to_matrix
+;    - Reconstruye la matriz desde la línea modificada
+;    - Entrada: matrix_line (625 bytes modificados)
+;    - Salida: matrix (625 bytes actualizados)
+;
+; 4. rebuild_buffer
+;    - Reconstruye el buffer del archivo PBM con formato correcto
+;    - Entrada: matrix con la matriz modificada
+;    - Salida: file_buffer reconstruido con espacios y saltos de línea
+;
+; 5. get_bit_from_line
+;    - Obtiene un bit de la línea por índice (0-624)
+;    - Entrada: EAX = índice
+;    - Salida: AL = '0' o '1'
+;
+; 6. set_bit_in_line
+;    - Modifica un bit en la línea por índice (0-624)
+;    - Entrada: EAX = índice, CL = valor ('0' o '1')
+;
+; 7. get_bit_from_matrix_xy
+;    - Obtiene un bit usando coordenadas (fila, columna)
+;    - Entrada: EAX = fila (0-24), EBX = columna (0-24)
+;    - Salida: AL = '0' o '1'
+;
+; FLUJO DE TRABAJO:
+; 1. Leer archivo PBM -> file_buffer
+; 2. extract_matrix -> matrix (625 bytes sin formato)
+; 3. matrix_to_line -> matrix_line (copia para modificar)
+; 4. Modificar matrix_line usando set_bit_in_line o directamente
+; 5. line_to_matrix -> matrix (aplicar cambios)
+; 6. rebuild_buffer -> file_buffer (reconstruir con formato PBM)
+; 7. Escribir file_buffer al archivo
+;
+;================================================
+
 %include "io.mac"
 
 .DATA
@@ -45,8 +92,16 @@ opcion_menu          resb 1         ; Opcion del menu
 ; ==== Variables internas ====
 file_buffer          resb 1024      ; Buffer para todo el archivo
 matrix               resb 625       ; 25x25 matriz sin saltos de línea
+matrix_line          resb 625       ; Línea de 625 caracteres (0s y 1s)
+header_size          resd 1         ; Tamaño del encabezado PBM
 fd                   resd 1         ; File descriptor
 bytes_read           resd 1         ; Bytes leídos
+
+data_bits            resb 512       ; Bits de datos + mode + count indicators
+data_length          resd 1         ; Cantidad total de bits (incluyendo mode y count)
+current_bit_idx      resd 1         ; Índice actual en data_bits
+text_char_count      resd 1         ; Número de caracteres del texto
+
 
 .CODE
 .STARTUP
@@ -165,7 +220,6 @@ iniciar_generador:
    nwln
   
    ; Aquí iría la lógica de generación del QR
-   ; Por ahora, solo cargamos y modificamos el archivo existente
    call procesar_qr
   
    ; Mostrar mensaje de exito
@@ -209,13 +263,36 @@ procesar_qr:
     call extract_matrix
     
     ; ============================================
-    ; 4. MODIFICAR LA MATRIZ
+    ; 4. CONVERTIR MATRIZ A LÍNEA MODIFICABLE
     ; ============================================
-    ; Ejemplo: Cambiar posición [13, 15] a 1
-    mov eax, 13                 ; fila
-    mov ebx, 15                 ; columna
+    call matrix_to_line
+    
+    ; ============================================
+    ; 5. MODIFICAR LA LÍNEA (EJEMPLO)
+    ; ============================================
+    ; Ejemplo 1: Cambiar bit en índice 100 a '1'
+    mov eax, 100                ; índice en la línea
     mov cl, '1'                 ; nuevo valor
-    call set_bit
+    call set_bit_in_line
+    
+    ; Ejemplo 2: Cambiar bit en índice 200 a '0'
+    mov eax, 200
+    mov cl, '0'
+    call set_bit_in_line
+    
+    ; Ejemplo 3: Modificar usando coordenadas [13, 15]
+    ; Primero calcular índice: 13 * 25 + 15 = 340
+    mov eax, 13                 ; fila
+    mov ebx, 25
+    mul ebx                     ; EAX = 13 * 25 = 325
+    add eax, 15                 ; EAX = 340
+    mov cl, '1'
+    call set_bit_in_line
+    
+    ; ============================================
+    ; 6. RECONSTRUIR MATRIZ DESDE LÍNEA MODIFICADA
+    ; ============================================
+    call line_to_matrix
 
    ; ============================================
     ; 5. RECONSTRUIR BUFFER CON MATRIZ MODIFICADA
@@ -258,91 +335,243 @@ procesar_qr:
 ; FUNCIONES
 ; ============================================
 
-
-; Extraer matriz del buffer (ignorar header PBM)
+; ============================================
+; EXTRACT_MATRIX
+; Extrae la matriz 25x25 del buffer del archivo PBM
+; ignorando el encabezado (P1, 25 25, etc.)
+; Entrada: file_buffer contiene el archivo completo
+; Salida: matrix contiene solo los 0s y 1s (625 bytes)
+;         header_size contiene el tamaño del encabezado
+; ============================================
 extract_matrix:
     pusha
-    mov esi, file_buffer
-    mov edi, matrix
     
-    ; Saltar "P1\n"
-    add esi, 3
+    mov esi, file_buffer        ; ESI apunta al inicio del buffer
+    xor ecx, ecx                ; ECX = contador de posición en el buffer
     
-    ; Saltar dimensiones "25 25\n"
-    .skip_dimensions:
-        lodsb                       ; move al, [esi]
-                                    ; inc esi
-        cmp al, 10                  ; newline
-        jne .skip_dimensions
+    ; Saltar primera línea (P1)
+.skip_first_line:
+    lodsb                       ; Cargar byte en AL
+    inc ecx
+    cmp al, 0x0A                ; Buscar newline
+    jne .skip_first_line
     
-    ; Copiar matriz eliminando saltos de línea
-    xor ecx, ecx                    ; contador
-    .copy_loop:
-        lodsb                       ; move al, [esi]
-                                    ; inc esi
+    ; Saltar segunda línea (25 25)
+.skip_second_line:
+    lodsb
+    inc ecx
+    cmp al, 0x0A                ; Buscar newline
+    jne .skip_second_line
+    
+    ; ECX ahora tiene el tamaño del encabezado
+    mov [header_size], ecx
+    
+    ; Ahora extraer solo los 0s y 1s, ignorando espacios y saltos de línea
+    mov edi, matrix             ; EDI apunta a matrix
+    xor edx, edx                ; EDX = contador de bits extraídos
+    
+.extract_loop:
+    cmp edx, 625                ; ¿Ya tenemos 625 bits?
+    jge .extract_done
+    
+    lodsb                       ; Cargar siguiente byte
+    
+    ; Verificar si es '0' o '1'
+    cmp al, '0'
+    je .is_valid_bit
+    cmp al, '1'
+    je .is_valid_bit
+    
+    ; Si no es 0 o 1, ignorar (espacios, newlines, etc.)
+    jmp .extract_loop
+    
+.is_valid_bit:
+    mov [edi], al               ; Guardar el bit en matrix
+    inc edi
+    inc edx
+    jmp .extract_loop
+    
+.extract_done:
+    popa
+    ret
 
-        cmp al, 10                  ; si es newline, ignorar
-        je .skip_newline
-        cmp al, 0                   ; fin de buffer
-        je .done
-        
-        mov [edi], al
-        inc edi
-        inc ecx
-        
-        cmp ecx, 625                ; 25x25
-        jge .done
-        jmp .copy_loop
-        
-    .skip_newline:
-        jmp .copy_loop
-        
-    .done:
-        popa
-        ret
+; ============================================
+; MATRIX_TO_LINE
+; Convierte la matriz en una línea continua de 0s y 1s
+; Entrada: matrix contiene la matriz (625 bytes)
+; Salida: matrix_line contiene la línea (625 bytes)
+; Nota: En realidad, matrix ya es una línea, pero esta función
+;       permite hacer una copia para modificaciones
+; ============================================
+matrix_to_line:
+    pusha
+    
+    mov esi, matrix             ; Fuente: matrix
+    mov edi, matrix_line        ; Destino: matrix_line
+    mov ecx, 625                ; 625 bytes a copiar
+    rep movsb                   ; Copiar bytes
+    
+    popa
+    ret
 
+; ============================================
+; LINE_TO_MATRIX
+; Reconstruye la matriz desde la línea modificada
+; Entrada: matrix_line contiene la línea modificada (625 bytes)
+; Salida: matrix contiene la matriz actualizada (625 bytes)
+; ============================================
+line_to_matrix:
+    pusha
+    
+    mov esi, matrix_line        ; Fuente: matrix_line
+    mov edi, matrix              ; Destino: matrix
+    mov ecx, 625                ; 625 bytes a copiar
+    rep movsb                   ; Copiar bytes
+    
+    popa
+    ret
 
-; Reconstruir buffer con matriz modificada
+; ============================================
+; REBUILD_BUFFER
+; Reconstruye el buffer del archivo con la matriz modificada
+; manteniendo el formato PBM (con espacios y saltos de línea)
+; Entrada: matrix contiene la matriz modificada (625 bytes)
+;          file_buffer contiene el buffer original
+;          header_size contiene el tamaño del encabezado
+; Salida: file_buffer contiene el archivo reconstruido
+;         bytes_read contiene el nuevo tamaño del buffer
+; ============================================
 rebuild_buffer:
     pusha
-    mov esi, file_buffer
-    mov edi, matrix
     
-    ; Saltar header hasta después de dimensiones
-    add esi, 3                   ; "P1\n"
-    .skip_dims:
-        lodsb
-        cmp al, 10
-        jne .skip_dims
+    ; Preservar el encabezado (ya está en file_buffer)
+    mov esi, matrix             ; ESI apunta a la matriz
+    mov edi, file_buffer        ; EDI apunta al buffer
+    add edi, [header_size]      ; Saltar el encabezado
     
-    ; Ahora ESI apunta al inicio de la matriz en file_buffer
-    ; Reconstruir con saltos de línea
-    xor ecx, ecx                 ; contador de columna
-    xor edx, edx                 ; contador total
+    xor ecx, ecx                ; ECX = contador de bits procesados
+    xor edx, edx                ; EDX = columna actual (0-24)
     
-    .rebuild_loop:
-        cmp edx, 625
-        jge .done
-        
-        mov al, [edi]            ; obtener bit de matrix
-        mov [esi], al            ; escribir en file_buffer
-        inc esi
-        inc edi
-        inc ecx
-        inc edx
-        
-        ; Cada 25 caracteres, agregar newline
-        cmp ecx, 25
-        jne .rebuild_loop
-        
-        mov byte [esi], 10       ; agregar newline
-        inc esi
-        xor ecx, ecx             ; reset contador columna
-        jmp .rebuild_loop
-        
-    .done:
-        popa
-        ret
+.rebuild_loop:
+    cmp ecx, 625                ; ¿Ya procesamos todos los bits?
+    jge .rebuild_done
+    
+    ; Copiar el bit
+    lodsb                       ; Cargar bit de matrix en AL
+    stosb                       ; Escribir bit en buffer
+    
+    inc ecx
+    inc edx
+    
+    ; Verificar si necesitamos añadir un espacio o salto de línea
+    cmp edx, 25                 ; ¿Fin de fila?
+    jl .add_space
+    
+    ; Fin de fila: añadir salto de línea
+    mov byte [edi], 0x0A        ; Newline
+    inc edi
+    xor edx, edx                ; Reiniciar contador de columna
+    jmp .rebuild_loop
+    
+.add_space:
+    ; No es fin de fila: añadir espacio
+    mov byte [edi], ' '         ; Espacio
+    inc edi
+    jmp .rebuild_loop
+    
+.rebuild_done:
+    ; Calcular el nuevo tamaño del buffer
+    ; Tamaño = header_size + 625 bits + 24 espacios por fila + 25 newlines
+    ; = header_size + 625 + 24*25 + 25 = header_size + 625 + 600 + 25 = header_size + 1250
+    mov eax, [header_size]
+    add eax, 1250
+    mov [bytes_read], eax
+    
+    popa
+    ret
+
+; ============================================
+; GET_BIT_FROM_LINE
+; Obtiene un bit específico de la línea
+; Entrada: EAX = índice (0-624)
+; Salida: AL = '0' o '1'
+; ============================================
+get_bit_from_line:
+    push esi
+    push ebx
+    
+    mov esi, matrix_line
+    add esi, eax                ; ESI apunta al bit en el índice
+    mov al, [esi]               ; Cargar el bit en AL
+    
+    pop ebx
+    pop esi
+    ret
+
+; ============================================
+; SET_BIT_IN_LINE
+; Establece un bit específico en la línea
+; Entrada: EAX = índice (0-624), CL = valor ('0' o '1')
+; ============================================
+set_bit_in_line:
+    push edi
+    push ebx
+    
+    mov edi, matrix_line
+    add edi, eax                ; EDI apunta al bit en el índice
+    mov [edi], cl               ; Escribir el nuevo valor
+    
+    pop ebx
+    pop edi
+    ret
+
+; ============================================
+; GET_BIT_FROM_MATRIX_XY
+; Obtiene un bit de la matriz usando coordenadas (fila, columna)
+; Entrada: EAX = fila (0-24), EBX = columna (0-24)
+; Salida: AL = '0' o '1'
+; ============================================
+get_bit_from_matrix_xy:
+    push edx
+    push esi
+    
+    ; Calcular índice: fila * 25 + columna
+    push ebx
+    mov edx, 25
+    mul edx                     ; EAX = fila * 25
+    pop ebx
+    add eax, ebx                ; EAX = fila * 25 + columna
+    
+    ; Obtener el bit
+    mov esi, matrix
+    add esi, eax
+    mov al, [esi]
+    
+    pop esi
+    pop edx
+    ret
+
+; ============================================
+; PRINT_MATRIX_LINE
+; Imprime la línea de matriz para depuración
+; (imprime los primeros 50 caracteres)
+; ============================================
+print_matrix_line:
+    pusha
+    
+    mov esi, matrix_line
+    mov ecx, 50                 ; Imprimir solo 50 caracteres
+    
+.print_loop:
+    lodsb
+    PutCh al
+    dec ecx
+    jnz .print_loop
+    
+    nwln
+    
+    popa
+    ret
 
 
 
