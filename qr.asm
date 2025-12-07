@@ -46,7 +46,7 @@ opcion_menu          resb 1         ; Opcion del menu
 ; ==== Variables internas ====
 file_buffer          resb 1024      ; Buffer para todo el archivo
 matrix               resb 625       ; 25x25 matriz sin saltos de línea
-matrix_line          resb 625       ; Línea de 625 caracteres (0s y 1s)
+
 header_size          resd 1         ; Tamaño del encabezado PBM
 fd                   resd 1         ; File descriptor
 fd_output            resd 1         ; File descriptor para archivo de salida
@@ -275,33 +275,8 @@ procesar_qr:
     ; ============================================
     call extract_matrix
     
-    ; ============================================
-    ; 4. CONVERTIR MATRIZ A LÍNEA MODIFICABLE
-    ; ============================================
-    call matrix_to_line
-    
-    ; ============================================
-    ; 5. MODIFICAR LA LÍNEA (EJEMPLO)
-    ; ============================================
-    ; Ejemplo 1: Cambiar bit en índice 100 a '1'
-    ;mov eax, 100                ; índice en la línea
-    ;mov cl, '1'                 ; nuevo valor
-    ;call set_bit_in_line
-    
-    ; Ejemplo 2: Cambiar bit en índice 200 a '0'
-    ;mov eax, 200
-    ;mov cl, '0'
-    ;call set_bit_in_line
-    
-    ; Ejemplo 3: Modificar usando coordenadas [13, 15]
-    ; Primero calcular índice: 13 * 25 + 15 = 340
-    ;mov eax, 13                 ; fila
-    ;mov ebx, 25
-    ;mul ebx                     ; EAX = 13 * 25 = 325
-    ;add eax, 15                 ; EAX = 340
-    ;mov cl, '1'
-    ;call set_bit_in_line
-    
+
+
     ; ============================================
     ; 5.5. CONVERTIR TEXTO A BINARIO Y ESCRIBIR EN ZIGZAG
     ; ============================================
@@ -418,42 +393,6 @@ extract_matrix:
     ret
 
 ; ============================================
-; MATRIX_TO_LINE
-; Convierte la matriz en una línea continua de 0s y 1s
-; Entrada: matrix contiene la matriz (625 bytes)
-; Salida: matrix_line contiene la línea (625 bytes)
-; Nota: En realidad, matrix ya es una línea, pero esta función
-;       permite hacer una copia para modificaciones
-; ============================================
-matrix_to_line:
-    pusha
-    
-    mov esi, matrix             ; Fuente: matrix
-    mov edi, matrix_line        ; Destino: matrix_line
-    mov ecx, 625                ; 625 bytes a copiar
-    rep movsb                   ; Copiar bytes
-    
-    popa
-    ret
-
-; ============================================
-; LINE_TO_MATRIX
-; Reconstruye la matriz desde la línea modificada
-; Entrada: matrix_line contiene la línea modificada (625 bytes)
-; Salida: matrix contiene la matriz actualizada (625 bytes)
-; ============================================
-line_to_matrix:
-    pusha
-    
-    mov esi, matrix_line        ; Fuente: matrix_line
-    mov edi, matrix              ; Destino: matrix
-    mov ecx, 625                ; 625 bytes a copiar
-    rep movsb                   ; Copiar bytes
-    
-    popa
-    ret
-
-; ============================================
 ; REBUILD_BUFFER
 ; Reconstruye el buffer del archivo con la matriz modificada
 ; manteniendo el formato PBM (con espacios y saltos de línea)
@@ -511,42 +450,6 @@ rebuild_buffer:
     
     popa
     ret
-
-; ============================================
-; GET_BIT_FROM_LINE
-; Obtiene un bit específico de la línea
-; Entrada: EAX = índice (0-624)
-; Salida: AL = '0' o '1'
-; ============================================
-get_bit_from_line:
-    push esi
-    push ebx
-    
-    mov esi, matrix_line
-    add esi, eax                ; ESI apunta al bit en el índice
-    mov al, [esi]               ; Cargar el bit en AL
-    
-    pop ebx
-    pop esi
-    ret
-
-; ============================================
-; SET_BIT_IN_LINE
-; Establece un bit específico en la línea
-; Entrada: EAX = índice (0-624), CL = valor ('0' o '1')
-; ============================================
-set_bit_in_line:
-    push edi
-    push ebx
-    
-    mov edi, matrix_line
-    add edi, eax                ; EDI apunta al bit en el índice
-    mov [edi], cl               ; Escribir el nuevo valor
-    
-    pop ebx
-    pop edi
-    ret
-
 ; ============================================
 ; GET_BIT_FROM_MATRIX_XY
 ; Obtiene un bit de la matriz usando coordenadas (fila, columna)
@@ -574,28 +477,7 @@ get_bit_from_matrix_xy:
     ret
 
 ; ============================================
-; PRINT_MATRIX_LINE
-; Imprime la línea de matriz para depuración
-; (imprime los primeros 50 caracteres)
-; ============================================
-print_matrix_line:
-    pusha
-    
-    mov esi, matrix_line
-    mov ecx, 50                 ; Imprimir solo 50 caracteres
-    
-.print_loop:
-    lodsb
-    PutCh al
-    dec ecx
-    jnz .print_loop
-    
-    nwln
-    
-    popa
-    ret
 
-; ============================================
 ; PRINT_ZIGZAG_BUFFER
 ; Imprime el contenido del zigzag_buffer usando PutStr
 ; ============================================
@@ -800,14 +682,8 @@ zigzag_core:
     mov dword [zigzag_row], 24
     
 .process_pair:
-    ; Determinar cuántas filas procesar según la columna
-    mov eax, [zigzag_col]
-    cmp eax, 23
-    jle .full_rows
-    mov ecx, 25                      ; Columnas 24-23: 25 filas (0-24)
-    jmp .row_loop
-.full_rows:
-    mov ecx, 25                      ; Otras columnas: 25 filas (0-24)
+    ; Todas las columnas procesan 25 filas
+    mov ecx, 25
     
 .row_loop:
     push ecx                         ; Guardar contador
@@ -988,18 +864,6 @@ zigzag_callback_write_data:
     pop eax
     
 .done:
-    ret
-
-; ============================================
-; ZIGZAG_TRAVERSAL (obsoleta - mantener por compatibilidad)
-; ============================================
-zigzag_traversal:
-    pusha
-    
-    mov edi, zigzag_callback_read
-    call zigzag_core
-    
-    popa
     ret
 
 ; ============================================
