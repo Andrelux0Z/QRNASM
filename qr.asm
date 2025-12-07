@@ -102,6 +102,13 @@ data_length          resd 1         ; Cantidad total de bits (incluyendo mode y 
 current_bit_idx      resd 1         ; Índice actual en data_bits
 text_char_count      resd 1         ; Número de caracteres del texto
 
+; ==== Variables para recorrido zigzag ====
+zigzag_buffer        resb 625       ; Buffer para almacenar bits en orden zigzag
+zigzag_col           resd 1         ; Columna actual en zigzag
+zigzag_row           resd 1         ; Fila actual en zigzag
+zigzag_direction     resd 1         ; Dirección: 1=subiendo, 0=bajando
+zigzag_idx           resd 1         ; Índice en zigzag_buffer
+
 
 .CODE
 .STARTUP
@@ -271,24 +278,30 @@ procesar_qr:
     ; 5. MODIFICAR LA LÍNEA (EJEMPLO)
     ; ============================================
     ; Ejemplo 1: Cambiar bit en índice 100 a '1'
-    mov eax, 100                ; índice en la línea
-    mov cl, '1'                 ; nuevo valor
-    call set_bit_in_line
+    ;mov eax, 100                ; índice en la línea
+    ;mov cl, '1'                 ; nuevo valor
+    ;call set_bit_in_line
     
     ; Ejemplo 2: Cambiar bit en índice 200 a '0'
-    mov eax, 200
-    mov cl, '0'
-    call set_bit_in_line
+    ;mov eax, 200
+    ;mov cl, '0'
+    ;call set_bit_in_line
     
     ; Ejemplo 3: Modificar usando coordenadas [13, 15]
     ; Primero calcular índice: 13 * 25 + 15 = 340
-    mov eax, 13                 ; fila
-    mov ebx, 25
-    mul ebx                     ; EAX = 13 * 25 = 325
-    add eax, 15                 ; EAX = 340
-    mov cl, '1'
-    call set_bit_in_line
+    ;mov eax, 13                 ; fila
+    ;mov ebx, 25
+    ;mul ebx                     ; EAX = 13 * 25 = 325
+    ;add eax, 15                 ; EAX = 340
+    ;mov cl, '1'
+    ;call set_bit_in_line
     
+    ; ============================================
+    ; 5.5. LEER Y MOSTRAR RECORRIDO ZIGZAG
+    ; ============================================
+    call zigzag_read_sequence    ; Llenar zigzag_buffer
+    call print_zigzag_buffer     ; Imprimir el buffer
+
     ; ============================================
     ; 6. RECONSTRUIR MATRIZ DESDE LÍNEA MODIFICADA
     ; ============================================
@@ -573,6 +586,19 @@ print_matrix_line:
     popa
     ret
 
+; ============================================
+; PRINT_ZIGZAG_BUFFER
+; Imprime el contenido del zigzag_buffer usando PutStr
+; ============================================
+print_zigzag_buffer:
+    pusha
+    
+    PutStr zigzag_buffer
+    nwln
+    
+    popa
+    ret
+
 
 
 
@@ -601,4 +627,186 @@ error:
    PutStr msg_error
    nwln
    jmp salir_programa
+
+
+
+
+
+
+; ============================================
+; ZIGZAG_TRAVERSAL
+; Recorre la matriz en forma de zigzag (como se hace en códigos QR)
+; El recorrido en QR empieza desde la esquina inferior derecha
+; y avanza en columnas de derecha a izquierda, alternando dirección
+; 
+; Parámetros:
+;   ESI -> puntero a función callback que procesa cada bit
+;          La función recibe: EAX=fila, EBX=columna, CL=valor del bit
+; 
+; Retorno: ninguno
+; ============================================
+zigzag_traversal:
+    pusha
+    
+    mov dword [zigzag_col], 24      ; Empezar en columna 24 (última)
+    mov dword [zigzag_direction], 1  ; 1 = subiendo, 0 = bajando
+    
+.column_loop:
+    mov ecx, [zigzag_col]
+    cmp ecx, 0
+    jl .done                         ; Si columna < 0, terminar
+    
+    ; Procesar par de columnas (col y col-1)
+    mov dword [zigzag_row], 0
+    cmp dword [zigzag_direction], 1
+    je .going_up
+    
+    ; Bajando: empezar desde fila 0 hasta 24
+    mov dword [zigzag_row], 0
+    jmp .process_column_pair
+    
+.going_up:
+    ; Subiendo: empezar desde fila 24 hasta 0
+    mov dword [zigzag_row], 24
+    
+.process_column_pair:
+    mov ecx, 25                      ; 25 filas a procesar
+    
+.row_loop:
+    ; Procesar bit en columna actual
+    mov eax, [zigzag_row]
+    mov ebx, [zigzag_col]
+    call get_bit_from_matrix_xy
+    ; AL contiene el bit
+    mov cl, al
+    mov eax, [zigzag_row]
+    mov ebx, [zigzag_col]
+    ; Aquí se puede procesar el bit (cl contiene '0' o '1')
+    ; Por ahora solo lo leemos, pero se puede llamar a callback
+    
+    ; Procesar bit en columna-1 (si existe)
+    mov ebx, [zigzag_col]
+    dec ebx
+    cmp ebx, 0
+    jl .skip_second_col
+    
+    mov eax, [zigzag_row]
+    call get_bit_from_matrix_xy
+    mov cl, al
+    ; Aquí también se procesa el segundo bit
+    
+.skip_second_col:
+    ; Avanzar a siguiente fila según dirección
+    cmp dword [zigzag_direction], 1
+    je .decrement_row
+    
+    ; Bajando: incrementar fila
+    inc dword [zigzag_row]
+    jmp .continue_row
+    
+.decrement_row:
+    ; Subiendo: decrementar fila
+    dec dword [zigzag_row]
+    
+.continue_row:
+    dec ecx
+    jnz .row_loop
+    
+    ; Cambiar dirección para siguiente par de columnas
+    xor dword [zigzag_direction], 1
+    
+    ; Avanzar 2 columnas hacia la izquierda
+    sub dword [zigzag_col], 2
+    jmp .column_loop
+    
+.done:
+    popa
+    ret
+
+; ============================================
+; ZIGZAG_READ_SEQUENCE
+; Lee la secuencia de bits en orden zigzag y los almacena
+; en un buffer lineal
+; 
+; Salida: zigzag_buffer contendrá los bits en orden de lectura
+; ============================================
+zigzag_read_sequence:
+    pusha
+    
+    mov edi, zigzag_buffer           ; Buffer destino
+    mov dword [zigzag_idx], 0        ; Índice en buffer
+    
+    mov dword [zigzag_col], 24       ; Empezar en columna 24
+    mov dword [zigzag_direction], 1  ; 1 = subiendo
+    
+.column_loop:
+    mov ecx, [zigzag_col]
+    cmp ecx, 0
+    jl .done
+    
+    ; Determinar fila inicial según dirección
+    cmp dword [zigzag_direction], 1
+    je .init_up
+    mov dword [zigzag_row], 0        ; Bajando: empezar en 0
+    jmp .process_pair
+.init_up:
+    mov dword [zigzag_row], 24       ; Subiendo: empezar en 24
+    
+.process_pair:
+    mov ecx, 25                      ; 25 filas
+    
+.row_loop:
+    ; Leer bit de columna actual
+    mov eax, [zigzag_row]
+    mov ebx, [zigzag_col]
+    call get_bit_from_matrix_xy
+    
+    ; Guardar en buffer
+    mov edi, zigzag_buffer
+    add edi, [zigzag_idx]
+    mov [edi], al
+    inc dword [zigzag_idx]
+    
+    ; Leer bit de columna-1
+    mov ebx, [zigzag_col]
+    dec ebx
+    cmp ebx, 0
+    jl .skip_col2
+    
+    mov eax, [zigzag_row]
+    call get_bit_from_matrix_xy
+    
+    mov edi, zigzag_buffer
+    add edi, [zigzag_idx]
+    mov [edi], al
+    inc dword [zigzag_idx]
+    
+.skip_col2:
+    ; Avanzar fila según dirección
+    cmp dword [zigzag_direction], 1
+    je .dec_row
+    inc dword [zigzag_row]
+    jmp .next_row
+.dec_row:
+    dec dword [zigzag_row]
+    
+.next_row:
+    dec ecx
+    jnz .row_loop
+    
+    ; Cambiar dirección
+    xor dword [zigzag_direction], 1
+    
+    ; Mover 2 columnas a la izquierda
+    sub dword [zigzag_col], 2
+    jmp .column_loop
+    
+.done:
+    ; Agregar null terminator al final del buffer
+    mov edi, zigzag_buffer
+    add edi, [zigzag_idx]
+    mov byte [edi], 0
+    
+    popa
+    ret
 
