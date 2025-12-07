@@ -94,7 +94,8 @@ menu:
 ; Convertir texto a binario (ASCII de 8 bits)
 ; Entrada: texto_usuario contiene el texto
 ; Salida: data_bits contiene los bits ('0' y '1' como caracteres)
-;         data_length contiene la cantidad de bits
+;         Formato: [4 bits modo][8 bits contador][mensaje]
+;         data_length contiene la cantidad total de bits (modo + contador + mensaje)
 ;         EAX = número de bits, o -1 si error
 texto_a_binario:
     pusha
@@ -117,16 +118,55 @@ texto_a_binario:
     jmp .count_loop
     
 .count_done:
+    ; ECX = número de caracteres del mensaje
+    ; Guardar el número de caracteres para usarlo después
+    mov [text_char_count], ecx
+    
+    ; EDI apunta al inicio de data_bits
+    mov edi, data_bits
+    
+    ; ===== ESCRIBIR 4 BITS DE MODO (0100 = Byte mode) =====
+    mov byte [edi], '0'
+    inc edi
+    mov byte [edi], '1'
+    inc edi
+    mov byte [edi], '0'
+    inc edi
+    mov byte [edi], '0'
+    inc edi
+    
+    ; ===== ESCRIBIR 8 BITS DEL CONTADOR DE CARACTERES =====
+    ; ECX contiene el número de caracteres
+    ; Escribir del bit menos significativo al más significativo
+    mov al, cl               ; AL = número de caracteres (0-32)
+    push ecx                 ; Guardar ECX
+    mov ecx, 8               ; 8 bits para el contador
+    
+.counter_bit_loop:
+    test al, 1               ; Verificar el bit menos significativo
+    jz .counter_bit_is_zero
+    
+.counter_bit_is_one:
+    mov byte [edi], '1'
+    jmp .next_counter_bit
+    
+.counter_bit_is_zero:
+    mov byte [edi], '0'
+    
+.next_counter_bit:
+    inc edi
+    shr al, 1                ; Desplazar a la derecha para procesar el siguiente bit
+    dec ecx
+    jnz .counter_bit_loop
+    
+    pop ecx                  ; Recuperar ECX (número de caracteres)
+    
+    ; ===== ESCRIBIR BITS DEL MENSAJE (8 bits por carácter) =====
     ; ECX = número de caracteres
-    ; Calcular bits totales: caracteres * 8
-    push ecx
-    shl ecx, 3               ; multiplicar por 8 (ECX = ECX * 8)
-    mov [data_length], ecx
-    pop ecx
+    ; EDI ya está posicionado después de los 12 bits anteriores
     
     ; Convertir cada carácter a 8 bits
     mov esi, texto_usuario   ; puntero al texto
-    mov edi, data_bits       ; puntero al buffer de bits
     
 .char_loop:
     test ecx, ecx
@@ -163,6 +203,12 @@ texto_a_binario:
     jmp .char_loop
     
 .done:
+    ; Calcular bits totales: 4 (modo) + 8 (contador) + (caracteres * 8)
+    mov eax, [text_char_count]
+    shl eax, 3               ; EAX = caracteres * 8
+    add eax, 12              ; EAX = (caracteres * 8) + 12
+    mov [data_length], eax
+    
     popa
     mov eax, [data_length]   ; retornar número de bits
     ret
@@ -750,21 +796,15 @@ zigzag_core:
     mov dword [zigzag_row], 0
     jmp .process_pair
 .init_up:
-    ; Si estamos en columna 24 o 23, empezar en fila 18, sino en 24
-    mov eax, [zigzag_col]
-    cmp eax, 23
-    jle .init_full
-    mov dword [zigzag_row], 18       ; Columnas 24-23: empezar en fila 18
-    jmp .process_pair
-.init_full:
-    mov dword [zigzag_row], 24       ; Otras columnas: empezar en fila 24
+    ; Todas las columnas empiezan en fila 24 (subiendo)
+    mov dword [zigzag_row], 24
     
 .process_pair:
     ; Determinar cuántas filas procesar según la columna
     mov eax, [zigzag_col]
     cmp eax, 23
     jle .full_rows
-    mov ecx, 19                      ; Columnas 24-23: solo 19 filas (0-18)
+    mov ecx, 25                      ; Columnas 24-23: 25 filas (0-24)
     jmp .row_loop
 .full_rows:
     mov ecx, 25                      ; Otras columnas: 25 filas (0-24)
@@ -779,14 +819,7 @@ zigzag_core:
     ; Verificar límites de fila
     cmp eax, 0
     jl .skip_col1
-    ; Determinar límite superior según columna
-    cmp ebx, 23
-    jle .check_normal_limit1
-    cmp eax, 18                      ; Columnas 24-23: límite es fila 18
-    jg .skip_col1
-    jmp .process_col1
-.check_normal_limit1:
-    cmp eax, 24                      ; Otras columnas: límite es fila 24
+    cmp eax, 24                      ; Límite es fila 24 para todas las columnas
     jg .skip_col1
 .process_col1:
     
@@ -804,14 +837,7 @@ zigzag_core:
     mov eax, [zigzag_row]
     cmp eax, 0
     jl .skip_col2
-    ; Determinar límite superior según columna-1
-    cmp edx, 23
-    jle .check_normal_limit2
-    cmp eax, 18                      ; Columnas 24-23: límite es fila 18
-    jg .skip_col2
-    jmp .process_col2
-.check_normal_limit2:
-    cmp eax, 24                      ; Otras columnas: límite es fila 24
+    cmp eax, 24                      ; Límite es fila 24 para todas las columnas
     jg .skip_col2
 .process_col2:
     
