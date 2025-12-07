@@ -744,16 +744,30 @@ zigzag_core:
     cmp dword [zigzag_col], 0
     jl .done
     
-    ; Determinar fila inicial según dirección
+    ; Determinar fila inicial y contador según dirección y columna
     cmp dword [zigzag_direction], 1
     je .init_up
     mov dword [zigzag_row], 0
     jmp .process_pair
 .init_up:
-    mov dword [zigzag_row], 24
+    ; Si estamos en columna 24 o 23, empezar en fila 18, sino en 24
+    mov eax, [zigzag_col]
+    cmp eax, 23
+    jle .init_full
+    mov dword [zigzag_row], 18       ; Columnas 24-23: empezar en fila 18
+    jmp .process_pair
+.init_full:
+    mov dword [zigzag_row], 24       ; Otras columnas: empezar en fila 24
     
 .process_pair:
-    mov ecx, 25
+    ; Determinar cuántas filas procesar según la columna
+    mov eax, [zigzag_col]
+    cmp eax, 23
+    jle .full_rows
+    mov ecx, 19                      ; Columnas 24-23: solo 19 filas (0-18)
+    jmp .row_loop
+.full_rows:
+    mov ecx, 25                      ; Otras columnas: 25 filas (0-24)
     
 .row_loop:
     push ecx                         ; Guardar contador
@@ -765,8 +779,16 @@ zigzag_core:
     ; Verificar límites de fila
     cmp eax, 0
     jl .skip_col1
-    cmp eax, 24
+    ; Determinar límite superior según columna
+    cmp ebx, 23
+    jle .check_normal_limit1
+    cmp eax, 18                      ; Columnas 24-23: límite es fila 18
     jg .skip_col1
+    jmp .process_col1
+.check_normal_limit1:
+    cmp eax, 24                      ; Otras columnas: límite es fila 24
+    jg .skip_col1
+.process_col1:
     
     ; Llamar callback con EAX=fila, EBX=columna
     mov esi, [esp + 4]               ; Recuperar callback desde stack (después del push ecx)
@@ -782,8 +804,16 @@ zigzag_core:
     mov eax, [zigzag_row]
     cmp eax, 0
     jl .skip_col2
-    cmp eax, 24
+    ; Determinar límite superior según columna-1
+    cmp edx, 23
+    jle .check_normal_limit2
+    cmp eax, 18                      ; Columnas 24-23: límite es fila 18
     jg .skip_col2
+    jmp .process_col2
+.check_normal_limit2:
+    cmp eax, 24                      ; Otras columnas: límite es fila 24
+    jg .skip_col2
+.process_col2:
     
     mov ebx, edx
     mov esi, [esp + 4]               ; Recuperar callback
