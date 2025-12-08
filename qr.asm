@@ -649,13 +649,17 @@ error:
 
 ; ============================================
 ; ZIGZAG_CORE
-; Función core que ejecuta el recorrido zigzag y llama
-; a un callback para cada posición (fila, columna)
+; Recorre la matriz QR en patrón zigzag, de derecha a izquierda.
+; 
+; Patrón de recorrido:
+;   - Empieza en columna 24, procesa pares (col, col-1)
+;   - Alterna entre subir (fila 24→0) y bajar (fila 0→24)
+;   - Avanza 2 columnas a la izquierda en cada iteración
+;   - El callback decide qué hacer con cada posición
 ; 
 ; Parámetros:
 ;   EDI -> dirección de la función callback
 ;          Callback recibe: EAX=fila, EBX=columna
-;          Callback debe preservar EDI y variables zigzag_*
 ; ============================================
 zigzag_core:
     push eax
@@ -665,8 +669,9 @@ zigzag_core:
     push esi
     push edi                         ; Guardar callback
     
-    mov dword [zigzag_col], 24
-    mov dword [zigzag_direction], 1
+    ; Iniciar en esquina inferior derecha
+    mov dword [zigzag_col], 24       ; Columna inicial: 24 (derecha)
+    mov dword [zigzag_direction], 1  ; 1 = subiendo, 0 = bajando
     
 .column_loop:
     cmp dword [zigzag_col], 0
@@ -735,10 +740,11 @@ zigzag_core:
     dec ecx
     jnz .row_loop
     
-    ; Cambiar dirección
+    ; Al terminar todas las filas del par de columnas:
+    ; 1. Invertir dirección (subiendo↔bajando)
     xor dword [zigzag_direction], 1
     
-    ; Mover 2 columnas a la izquierda
+    ; 2. Mover al siguiente par de columnas (2 a la izquierda)
     sub dword [zigzag_col], 2
     jmp .column_loop
     
@@ -808,12 +814,16 @@ zigzag_callback_set_ones:
 ; Usa: current_bit_idx para rastrear posición en data_bits
 ;      data_length para saber cuántos bits escribir
 zigzag_callback_write_data:
-    push eax
-    push ebx
     push ecx
+    push edx
     push esi
+    push edi
     
-    ; Verificar si es zona fija
+    ; Guardar fila y columna en la pila (serán restaurados después)
+    push eax                          ; Guardar fila
+    push ebx                          ; Guardar columna
+    
+    ; Verificar si es zona fija (modifica AL)
     call is_fixed_position
     cmp al, 1
     je .skip                          ; Si es fija, no modificar
@@ -824,11 +834,9 @@ zigzag_callback_write_data:
     jge .write_zero                   ; Si ya terminamos, escribir '0'
     
     ; Obtener el bit del buffer de datos
-    push edi
     mov edi, data_bits
     add edi, esi                      ; EDI apunta al bit actual
     mov cl, [edi]                     ; CL = '0' o '1'
-    pop edi
     
     ; Incrementar índice para el próximo bit
     inc dword [current_bit_idx]
@@ -840,30 +848,24 @@ zigzag_callback_write_data:
     mov cl, '0'
     
 .write_bit:
-    ; Guardar el bit a escribir temporalmente
-    push ecx                          ; Guardar el bit actual
+    ; Restaurar fila y columna
+    pop ebx                           ; Restaurar columna
+    pop eax                           ; Restaurar fila
     
-    ; Restaurar registros para set_bit
-    pop edx                           ; EDX = bit a escribir (en DL)
-    pop esi
-    pop ecx                           ; Restaurar ECX original
-    pop ebx
-    pop eax
-    
-    ; Preparar para set_bit: EAX=fila, EBX=columna, CL=bit
-    mov cl, dl                        ; CL = bit a escribir
-    
-    ; Escribir el bit en la posición (EAX, EBX)
+    ; Escribir el bit en la posición (EAX, EBX, CL)
     call set_bit
     jmp .done
     
 .skip:
-    pop esi
-    pop ecx
+    ; Limpiar la pila (fila y columna)
     pop ebx
     pop eax
     
 .done:
+    pop edi
+    pop esi
+    pop edx
+    pop ecx
     ret
 
 ; ============================================
